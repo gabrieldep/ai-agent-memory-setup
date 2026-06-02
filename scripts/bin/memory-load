@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# memory-load — deterministic context loader for the persistent vault
+#
+# Prints a session-start summary to stdout. Used either:
+#   - directly by the user/agent at the start of a session
+#   - shelled out to by /memory-load when the prompt-driven path needs hard data
+#
+# Usage:
+#   memory-load [--vault PATH] [--project SLUG] [--limit N]
+#
+# Environment:
+#   VAULT_DIR   default vault path (overridden by --vault)
+#   PROJECT     default project slug (overridden by --project, else cwd basename)
+
+set -euo pipefail
+
+VAULT="${VAULT_DIR:-$HOME/vault}"
+PROJECT="${PROJECT:-$(basename "$PWD")}"
+LIMIT=3
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --vault)   VAULT="$2"; shift 2 ;;
+        --project) PROJECT="$2"; shift 2 ;;
+        --limit)   LIMIT="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *) echo "Unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [[ ! -d "$VAULT" ]]; then
+    echo "ERROR: vault not found at $VAULT" >&2
+    echo "Set VAULT_DIR or pass --vault PATH" >&2
+    exit 1
+fi
+
+print_section() { printf '\n## %s\n\n' "$1"; }
+
+printf '# Session context — loaded %s\n' "$(date '+%Y-%m-%d %H:%M')"
+printf 'Vault: %s\n' "$VAULT"
+printf 'Project: %s\n' "$PROJECT"
+
+print_section "Last ${LIMIT} session logs"
+if [[ -d "$VAULT/logs" ]]; then
+    mapfile -t recent < <(find "$VAULT/logs" -maxdepth 1 -name '*.md' -type f 2>/dev/null \
+        | sort -r | head -n "$LIMIT")
+    if [[ ${#recent[@]} -eq 0 ]]; then
+        echo "(no logs yet)"
+    else
+        for f in "${recent[@]}"; do
+            title=$(awk '/^title:/{sub(/^title: */,""); gsub(/^"|"$/,""); print; exit}' "$f")
+            printf -- '- **%s** — %s\n' "$(basename "$f" .md)" "${title:-untitled}"
+        done
+    fi
+else
+    echo "(no logs/ directory)"
+fi
+
+print_section "Project decisions"
+DECISIONS="$VAULT/$PROJECT/architecture/decisions.md"
+if [[ -f "$DECISIONS" ]]; then
+    printf 'See: %s\n\n' "$DECISIONS"
+    grep -E '^##? ' "$DECISIONS" | head -n 20 || true
+else
+    echo "(no decisions.md for project $PROJECT)"
+fi
+
+print_section "Active project notes"
+PROJ_DIR="$VAULT/$PROJECT"
+if [[ -d "$PROJ_DIR" ]]; then
+    found=0
+    while IFS= read -r -d '' f; do
+        if awk '/^---$/{c++;next} c==1 && /^status:[[:space:]]*active/{found=1; exit} c>=2{exit} END{exit !found}' "$f"; then
+            title=$(awk '/^title:/{sub(/^title: */,""); gsub(/^"|"$/,""); print; exit}' "$f")
+            rel="${f#"$VAULT/"}"
+            printf -- '- %s (%s)\n' "${title:-$(basename "$f" .md)}" "$rel"
+            found=1
+        fi
+    done < <(find "$PROJ_DIR" -maxdepth 3 -name '*.md' -type f -print0 2>/dev/null)
+    [[ $found -eq 0 ]] && echo "(no active notes)"
+else
+    echo "(no project folder yet — create $PROJ_DIR/)"
+fi
+
+print_section "Codebase graph"
+if [[ -f "$PWD/graphify-out/graph.json" ]]; then
+    size=$(stat -c%s "$PWD/graphify-out/graph.json" 2>/dev/null \
+        || stat -f%z "$PWD/graphify-out/graph.json" 2>/dev/null || echo "?")
+    printf 'Graph available: graphify-out/graph.json (%s bytes)\n' "$size"
+    if [[ -f "$PWD/graphify-out/GRAPH_REPORT.md" ]]; then
+        printf '\nTop of GRAPH_REPORT.md:\n\n'
+        head -n 40 "$PWD/graphify-out/GRAPH_REPORT.md"
+    fi
+else
+    echo "(no graph in this directory — run 'graphify extract .' to generate)"
+fi
+
+print_section "Next"
+echo "Wait for the user's first instruction. Do not start working yet."

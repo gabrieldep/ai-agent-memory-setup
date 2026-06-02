@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# memory-save — deterministic session-log writer for the persistent vault
+#
+# Two modes:
+#   1. Write a full log:
+#        memory-save --slug auth-refactor --project example-app \
+#                    --source cursor --body-file /tmp/body.md
+#      (body file = the markdown sections "## What was done", etc.)
+#
+#   2. Pipe the body in via stdin:
+#        printf '%s\n' '## What was done' '- foo' | memory-save --slug auth --stdin
+#
+#   3. Verify the most recent log is well-formed:
+#        memory-save --check
+#
+# Usage:
+#   memory-save [--vault PATH] --slug SLUG [--project SLUG] [--source NAME]
+#               [--body-file PATH | --stdin] [--no-git]
+#   memory-save --check [--vault PATH]
+#
+# Environment:
+#   VAULT_DIR   default vault path
+#   PROJECT     default project slug
+#   AGENT_NAME  default source name
+
+set -euo pipefail
+
+VAULT="${VAULT_DIR:-$HOME/vault}"
+PROJECT="${PROJECT:-$(basename "$PWD")}"
+SOURCE="${AGENT_NAME:-unknown}"
+SLUG=""
+BODY_FILE=""
+READ_STDIN=0
+CHECK=0
+SKIP_GIT=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --vault)     VAULT="$2"; shift 2 ;;
+        --slug)      SLUG="$2"; shift 2 ;;
+        --project)   PROJECT="$2"; shift 2 ;;
+        --source)    SOURCE="$2"; shift 2 ;;
+        --body-file) BODY_FILE="$2"; shift 2 ;;
+        --stdin)     READ_STDIN=1; shift ;;
+        --no-git)    SKIP_GIT=1; shift ;;
+        --check)     CHECK=1; shift ;;
+        -h|--help)
+            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *) echo "Unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [[ ! -d "$VAULT" ]]; then
+    echo "ERROR: vault not found at $VAULT" >&2
+    exit 1
+fi
+
+mkdir -p "$VAULT/logs"
+
+# ---------------------------------------------------------------------------
+# --check mode: verify the most recent log
+# ---------------------------------------------------------------------------
+if [[ $CHECK -eq 1 ]]; then
+    latest=$(find "$VAULT/logs" -maxdepth 1 -name '*.md' -type f 2>/dev/null | sort -r | head -n 1)
+    if [[ -z "$latest" ]]; then
+        echo "FAIL: no logs found in $VAULT/logs" >&2
+        exit 1
+    fi
+    fail=0
+    grep -q '^title:'   "$latest" || { echo "FAIL: missing title in $latest"; fail=1; }
+    grep -q '^created:' "$latest" || { echo "FAIL: missing created in $latest"; fail=1; }
+    grep -q '^type: session-log' "$latest" || { echo "FAIL: type should be session-log"; fail=1; }
+    for section in "## What was done" "## Decisions" "## Open questions" "## Next session"; do
+        grep -qF "$section" "$latest" || { echo "FAIL: missing section '$section'"; fail=1; }
+    done
+    if [[ $fail -eq 0 ]]; then
+        echo "OK: $latest"
+        exit 0
+    fi
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Write mode
+# ---------------------------------------------------------------------------
+if [[ -z "$SLUG" ]]; then
+    echo "ERROR: --slug is required" >&2
+    exit 2
+fi
+
+if ! [[ "$SLUG" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+    echo "ERROR: slug must be kebab-case (got: $SLUG)" >&2
+    exit 2
+fi
+
+NOW_DATE=$(date '+%Y-%m-%d')
+NOW_TS=$(date '+%Y-%m-%d-%H%M')
+FILENAME="${NOW_TS}-${SLUG}.md"
+DEST="$VAULT/logs/$FILENAME"
+
+if [[ -e "$DEST" ]]; then
+    echo "ERROR: log already exists: $DEST" >&2
+    exit 1
+fi
+
+# Body comes from --body-file or --stdin (explicit only, never auto-read stdin)
+BODY=""
+if [[ -n "$BODY_FILE" ]]; then
+    if [[ ! -f "$BODY_FILE" ]]; then
+        echo "ERROR: body file not found: $BODY_FILE" >&2
+        exit 1
+    fi
+    BODY=$(cat "$BODY_FILE")
+elif [[ $READ_STDIN -eq 1 ]]; then
+    BODY=$(cat)
+fi
+
+# Provide a stub body if none was given so the verify still passes
+if [[ -z "$BODY" ]]; then
+    BODY=$(cat <<'EOF'
+## What was done
+- (fill in)
+
+## Decisions
+- (fill in)
+
+## Open questions
+- (fill in)
+
+## Next session
+- (fill in)
+EOF
+)
+fi
+
+# Humanize the slug for the title
+TITLE=$(echo "$SLUG" | tr '-' ' ' | sed 's/\b\([a-z]\)/\u\1/g')
+
+cat > "$DEST" <<EOF
+---
+title: "$TITLE"
+tags: [session, $PROJECT]
+created: $NOW_DATE
+updated: $NOW_DATE
+status: complete
+type: session-log
+project: $PROJECT
+source: $SOURCE
+---
+
+# $TITLE
+
+$BODY
+EOF
+
+echo "Wrote $DEST"
+
+# Run verification on what we just wrote
+"$0" --check --vault "$VAULT" >/dev/null || {
+    echo "ERROR: written log failed verification — see $DEST" >&2
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Git commit (only if we're inside a git repo and --no-git was not passed)
+# ---------------------------------------------------------------------------
+if [[ $SKIP_GIT -eq 0 ]] && git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [[ -n "$(git -C "$PWD" status --porcelain)" ]]; then
+        git -C "$PWD" add -A
+        git -C "$PWD" commit -m "session: $SLUG" -m "Session log: $FILENAME" >/dev/null
+        echo "Committed: session: $SLUG"
+    else
+        echo "Git: no changes to commit"
+    fi
+fi

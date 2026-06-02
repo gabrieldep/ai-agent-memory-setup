@@ -1,0 +1,29 @@
+---
+description: Persistent vault memory + Zettelkasten conventions for this workspace
+alwaysApply: true
+---
+
+# Persistent memory
+
+Your persistent memory lives at `$VAULT` (see `$VAULT/AGENTS.md` for full conventions).
+
+## Quick rules
+
+- **Read before writing.** At the start of a non-trivial session, run `/memory-load` (or shell out to `~/.copilot-memory/bin/memory-load`) before touching code.
+- **Snapshot before ending.** When the user is wrapping up a session, run `/memory-save`.
+- **Three-layer query rule** inside any project that has `graphify-out/`:
+  1. Query `graphify-out/graph.json` or `graphify-out/wiki/index.md`
+  2. Query the vault for decisions/progress
+  3. Only read raw source files when editing
+- **Zettelkasten** when writing vault notes:
+  - Wikilinks (`[[note]]`), never markdown links for internal navigation
+  - YAML frontmatter on every note (`title`, `tags`, `created`, `updated`, `status`, `type`)
+  - kebab-case filenames
+  - ≥ 2 wikilinks per permanent note
+
+## Don't
+
+- Don't re-read every file in the project to "orient yourself" — query the graph first
+- Don't modify files inside `graphify-out/` manually
+- Don't delete vault notes without asking
+- Don't push git commits unless the user asks
