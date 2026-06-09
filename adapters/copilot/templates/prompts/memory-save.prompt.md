@@ -1,5 +1,5 @@
 ---
-mode: agent
+agent: agent
 description: Snapshot the current session into persistent vault memory
 ---
 

@@ -1,5 +1,5 @@
 ---
-mode: agent
+agent: agent
 description: Load persistent vault memory at the start of a session
 ---
 

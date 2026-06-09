@@ -1,0 +1,7 @@
+# Local install output (re-run ./install.sh --project ... after clone)
+AGENTS.md
+.cursor/
+.github/
+
+# Graphify build artifacts (regenerate with: graphify update .)
+graphify-out/
